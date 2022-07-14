@@ -15,10 +15,7 @@ class AbstractConfigLoader(MutableMapping):
 
     def __init__(
         self,
-        catalog,
-        parameters,
-        credentials,
-        logging,
+        essential_config: dict,
         conf_source: str,
         env: str = None,
         runtime_params: Dict[str, Any] = None,
@@ -28,12 +25,7 @@ class AbstractConfigLoader(MutableMapping):
         self.env = env
         self.runtime_params = runtime_params
 
-        self.mapping = {}
-        # Mandatory configs
-        self.mapping["catalog"] = catalog
-        self.mapping["parameters"] = parameters
-        self.mapping["credentials"] = credentials
-        self.mapping["logging"] = logging
+        self.mapping = essential_config
 
     def __getitem__(self, key):
         return self.mapping[key]

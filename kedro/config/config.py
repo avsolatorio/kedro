@@ -68,11 +68,8 @@ class ConfigLoader(AbstractConfigLoader):
     def __init__(
             self,
             conf_source: str,
-            catalog=None,
-            parameters=None,
-            credentials=None,
-            logging=None,
             env: str = None,
+            essential_config=None,
             runtime_params: Dict[str, Any] = None,
             *,
             base_env: str = "base",
@@ -91,21 +88,20 @@ class ConfigLoader(AbstractConfigLoader):
                 This is used in the `conf_paths` property method to construct
                 the configuration paths. Can be overriden by supplying the `env` argument.
         """
+        if essential_config is None:
+            essential_config = {}
         self.base_env = base_env
         self.default_run_env = default_run_env
         self.env = env
         self.conf_source = conf_source
 
-        catalog = self.get_essential_config("catalog", catalog)
-        parameters = self.get_essential_config("parameters", parameters)
-        credentials = self.get_essential_config("credentials", credentials)
-        logging = self.get_essential_config("logging", logging)
+        essential_config["catalog"] = self.get_essential_config("catalog", essential_config.get("catalog"))
+        essential_config["parameters"] = self.get_essential_config("parameters", essential_config.get("parameters"))
+        essential_config["credentials"] = self.get_essential_config("credentials", essential_config.get("credentials"))
+        essential_config["logging"] = self.get_essential_config("logging", essential_config.get("logging"))
 
         super().__init__(
-            catalog=catalog,
-            parameters=parameters,
-            credentials=credentials,
-            logging=logging,
+            essential_config=essential_config,
             conf_source=conf_source,
             env=env,
             runtime_params=runtime_params,
@@ -125,10 +121,14 @@ class ConfigLoader(AbstractConfigLoader):
         )
 
     def get_essential_config(self, config_type, provided_patterns=None):
-        patterns = provided_patterns or f"{config_type}*", f"{config_type}*/**", f"**/{config_type}*"
+        if provided_patterns:
+            patterns = [provided_patterns]
+        else:
+            patterns_glob = f"{config_type}*", f"{config_type}*/**", f"**/{config_type}*"
+            patterns = list(patterns_glob)
         try:
             config = _get_config_from_patterns(
-                conf_paths=self.conf_paths, patterns=list(patterns)
+                conf_paths=self.conf_paths, patterns=patterns
             )
         except MissingConfigException as exc:
             warn(f"Config ... not found in your Kedro project config.\n{str(exc)}")
