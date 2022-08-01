@@ -12,6 +12,7 @@
 # Upcoming Release 0.18.3
 
 ## Major features and improvements
+* Implement support for a functional definition of schema in `dask.ParquetDataSet` to work with the `dask.to_parquet` API.
 
 ## Bug fixes and other changes
 * Use default `False` value for rich logging `set_locals`, to make sure credentials and other sensitive data isn't shown in logs.

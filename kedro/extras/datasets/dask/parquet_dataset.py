@@ -1,11 +1,13 @@
 """``ParquetDataSet`` is a data set used to load and save data to parquet files using Dask
 dataframe"""
 
+import ast
 from copy import deepcopy
 from typing import Any, Dict
 
 import dask.dataframe as dd
 import fsspec
+import pyarrow
 
 from kedro.io.core import AbstractDataSet, get_protocol_and_path
 
@@ -40,6 +42,25 @@ class ParquetDataSet(AbstractDataSet[dd.DataFrame, dd.DataFrame]):
             >>> reloaded = data_set.load()
             >>>
             >>> assert ddf.compute().equals(reloaded.compute())
+
+    The output schema can also be explicitly specified using pyarrow's data types:
+    https://arrow.apache.org/docs/python/api/datatypes.html
+
+        .. code-block:: yaml
+
+            >>> parquet_dataset:
+            >>>   type: dask.ParquetDataSet
+            >>>   filepath: "s3://bucket_name/path/to/folder"
+            >>>   credentials:
+            >>>     client_kwargs:
+            >>>       aws_access_key_id: YOUR_KEY
+            >>>       aws_secret_access_key: "YOUR SECRET"
+            >>>   save_args:
+            >>>     compression: GZIP
+            >>>     schema:
+            >>>       col1: list_(int32)
+            >>>       col2: list_(int32)
+            >>>       col3: list_(int32)
     """
 
     DEFAULT_LOAD_ARGS = {}  # type: Dict[str, Any]
@@ -105,9 +126,89 @@ class ParquetDataSet(AbstractDataSet[dd.DataFrame, dd.DataFrame]):
         )
 
     def _save(self, data: dd.DataFrame) -> None:
+        self._process_schema()
         data.to_parquet(self._filepath, storage_options=self.fs_args, **self._save_args)
+
+    def _process_schema(self) -> None:
+        """Processes the schema in the catalog.yml or the API, if provided.
+        This directly supports the Dask specifications for providing a schema
+        when saving to a parquet file.
+
+        If the schema is a dictionary and the values are strings, we assume that they
+        correspond to pyarrow field types.
+
+        Alternatively, a full pyarrow.Schema type may also be provided if desired.
+        """
+        schema = self._save_args.get("schema")
+
+        if isinstance(schema, dict):
+            for col, field in self._save_args["schema"].items():
+                if isinstance(field, str):
+                    field = ast.parse(field)
+                    expr = field.body[0]
+                    self._save_args["schema"][col] = ParquetDataSet.process_schema_node(
+                        expr.value
+                    )
+        elif isinstance(schema, str) and schema.startswith("schema("):
+            schema = ast.parse(schema)
+            expr = schema.body[0]
+            self._save_args["schema"] = ParquetDataSet.process_schema_node(expr.value)
 
     def _exists(self) -> bool:
         protocol = get_protocol_and_path(self._filepath)[0]
         file_system = fsspec.filesystem(protocol=protocol, **self.fs_args)
         return file_system.exists(self._filepath)
+
+    @staticmethod
+    def process_schema_node(node):
+        """Process a node in the AST parsed from a string version
+        of a pyarrow field or schema declaration.
+
+        This recursively processes the parse tree and returns the
+        data type, field, or schema.
+        """
+        ret_ = None
+        if isinstance(node, ast.Call):
+            # Recreate the call tree for the given node.
+
+            assert isinstance(node.func, ast.Name), "Use the field names directly."
+            field_name = node.func.id
+            args = node.args
+            kwargs = node.keywords
+
+            field_dtype = getattr(pyarrow, field_name)
+
+            args = [ParquetDataSet.process_schema_node(arg) for arg in args]
+            kwargs = {
+                kwarg.arg: ParquetDataSet.process_schema_node(kwarg.value)
+                for kwarg in kwargs
+            }
+            ret_ = field_dtype(*args, **kwargs)
+
+            # Sanity check to make sure that the pyarrow return type matches.
+            if field_name == "schema":
+                assert isinstance(ret_, pyarrow.Schema)
+            elif field_name == "field":
+                assert isinstance(ret_, pyarrow.Field)
+            else:
+                assert isinstance(ret_, pyarrow.DataType)
+        elif isinstance(node, ast.List):
+            # Handles the list of field declarations in a schema.
+            ret_ = [ParquetDataSet.process_schema_node(arg) for arg in node.elts]
+        elif isinstance(node, ast.Tuple):
+            # Handles the tuple representation of fields in a schema.
+            ret_ = tuple(ParquetDataSet.process_schema_node(arg) for arg in node.elts)
+        elif isinstance(node, ast.Dict):
+            # Handles the metadata options in a schema.
+            ret_ = {
+                key.s: ParquetDataSet.process_schema_node(value)
+                for key, value in zip(node.keys, node.values)
+            }
+        elif isinstance(node, ast.Constant):
+            # General case for constant values of args and kwargs.
+            try:
+                ret_ = ast.literal_eval(node.value)
+            except ValueError:
+                ret_ = node.value
+
+        return ret_
